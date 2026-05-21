@@ -1,0 +1,14 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+env/
+
+# py2app build artifacts
+build/
+dist/
+
+# secrets / local
+.env
+*.local
