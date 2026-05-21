@@ -24,7 +24,7 @@ import config as config_mod
 import launch_agent
 from cache import download_photo, enforce_limit
 from providers.unsplash import UnsplashProvider
-from providers.framedsc import FramedSCProvider
+from providers.framedsc import FramedSCProvider, COLOR_GROUPS
 from wallpaper import set_wallpaper
 
 # Підписи інтервалів -> секунди
@@ -77,6 +77,7 @@ class WallRotateApp(rumps.App):
         self.config = config_mod.load_config()
         self.current_photo = None
         self._busy = False
+        self._framedsc_provider: FramedSCProvider | None = None  # кешований провайдер
 
         self._build_menu()
         self._refresh_menu_state()
@@ -155,6 +156,44 @@ class WallRotateApp(rumps.App):
         self.login_item = rumps.MenuItem("Launch at login", callback=self.on_toggle_login)
         about_item = rumps.MenuItem("About", callback=self.on_about)
 
+        # --- Hall of FRAMED filters submenu ---
+        hof_menu = rumps.MenuItem("Hall of FRAMED filters")
+
+        # Score
+        score_menu = rumps.MenuItem("Min score")
+        self.score_items: list[tuple[rumps.MenuItem, int]] = []
+        for label, val in [("Any", 0), ("≥ 5", 5), ("≥ 10", 10), ("≥ 25", 25), ("≥ 50", 50)]:
+            item = rumps.MenuItem(label, callback=self._make_score_cb(val))
+            self.score_items.append((item, val))
+            score_menu.add(item)
+
+        # Color group
+        color_menu = rumps.MenuItem("Color")
+        self.color_items: list[tuple[rumps.MenuItem, str | None]] = []
+        any_color = rumps.MenuItem("Any", callback=self._make_color_cb(None))
+        self.color_items.append((any_color, None))
+        color_menu.add(any_color)
+        for group_name in COLOR_GROUPS:
+            item = rumps.MenuItem(group_name, callback=self._make_color_cb(group_name))
+            self.color_items.append((item, group_name))
+            color_menu.add(item)
+
+        # Game filters
+        self.include_games_item = rumps.MenuItem(
+            "Include games…", callback=self.on_framedsc_include_games)
+        self.exclude_games_item = rumps.MenuItem(
+            "Exclude games…", callback=self.on_framedsc_exclude_games)
+
+        # Stats (тільки текст, без колбеку)
+        self.framedsc_stats_item = rumps.MenuItem("–")
+
+        hof_menu.add(score_menu)
+        hof_menu.add(color_menu)
+        hof_menu.add(self.include_games_item)
+        hof_menu.add(self.exclude_games_item)
+        hof_menu.add(None)
+        hof_menu.add(self.framedsc_stats_item)
+
         self.menu = [
             self.photo_item,
             None,  # роздільник
@@ -165,6 +204,8 @@ class WallRotateApp(rumps.App):
             source_menu,
             self.theme_item,
             self.key_item,
+            None,
+            hof_menu,
             self.login_item,
             None,
             about_item,
@@ -186,6 +227,60 @@ class WallRotateApp(rumps.App):
             rumps.notification("WallRotate", "Interval updated",
                                self._interval_label(secs))
         return cb
+
+    def _make_score_cb(self, val: int):
+        def cb(_sender):
+            self.config["framedsc_min_score"] = val
+            config_mod.save_config(self.config)
+            self._apply_framedsc_filters()
+            self._refresh_menu_state()
+        return cb
+
+    def _make_color_cb(self, group: str | None):
+        def cb(_sender):
+            self.config["framedsc_color_group"] = group or ""
+            config_mod.save_config(self.config)
+            self._apply_framedsc_filters()
+            self._refresh_menu_state()
+        return cb
+
+    def on_framedsc_include_games(self, _sender):
+        current = self.config.get("framedsc_include_games", "")
+        window = rumps.Window(
+            title="Include games",
+            message=(
+                "Show only shots from these games.\n"
+                "Comma-separated, case-insensitive partial match.\n"
+                "Leave empty to include all games."
+            ),
+            default_text=current,
+            ok="Save", cancel="Cancel", dimensions=(360, 24),
+        )
+        resp = window.run()
+        if resp.clicked:
+            self.config["framedsc_include_games"] = resp.text.strip()
+            config_mod.save_config(self.config)
+            self._apply_framedsc_filters()
+            self._refresh_menu_state()
+
+    def on_framedsc_exclude_games(self, _sender):
+        current = self.config.get("framedsc_exclude_games", "")
+        window = rumps.Window(
+            title="Exclude games",
+            message=(
+                "Hide shots from these games.\n"
+                "Comma-separated, case-insensitive partial match.\n"
+                "Leave empty to exclude nothing."
+            ),
+            default_text=current,
+            ok="Save", cancel="Cancel", dimensions=(360, 24),
+        )
+        resp = window.run()
+        if resp.clicked:
+            self.config["framedsc_exclude_games"] = resp.text.strip()
+            config_mod.save_config(self.config)
+            self._apply_framedsc_filters()
+            self._refresh_menu_state()
 
     def _make_source_cb(self, provider_name: str):
         def cb(_sender):
@@ -223,11 +318,34 @@ class WallRotateApp(rumps.App):
         is_unsplash = (provider == "unsplash")
         self.theme_item.set_callback(self.on_set_theme if is_unsplash else None)
         self.key_item.set_callback(self.on_set_key if is_unsplash else None)
-        # Візуальна підказка про недоступність
         self.theme_item.title = "Set theme…" if is_unsplash else "Set theme… (Unsplash only)"
         self.key_item.title = (
             "Set Unsplash API key…" if is_unsplash else "Set Unsplash API key… (inactive)"
         )
+
+        # --- FRAMED filters state ---
+        is_framedsc = (provider == "framedsc")
+        min_score = self.config.get("framedsc_min_score", 0)
+        for item, val in self.score_items:
+            item.state = 1 if val == min_score else 0
+
+        color_group = self.config.get("framedsc_color_group") or None
+        for item, group in self.color_items:
+            item.state = 1 if group == color_group else 0
+
+        inc = self.config.get("framedsc_include_games", "").strip()
+        exc = self.config.get("framedsc_exclude_games", "").strip()
+        self.include_games_item.title = (f"Include: {inc}" if inc else "Include games…")
+        self.exclude_games_item.title = (f"Exclude: {exc}" if exc else "Exclude games…")
+
+        # Активуємо фільтри лише для framedsc
+        for item in [self.include_games_item, self.exclude_games_item]:
+            item.set_callback(
+                (self.on_framedsc_include_games
+                 if item is self.include_games_item
+                 else self.on_framedsc_exclude_games)
+                if is_framedsc else None
+            )
 
         # позначка ✓ для автозапуску при вході
         self.login_item.state = 1 if launch_agent.is_enabled() else 0
@@ -236,15 +354,42 @@ class WallRotateApp(rumps.App):
     def _get_unsplash_key(self):
         return os.environ.get("UNSPLASH_ACCESS_KEY") or self.config.get("unsplash_access_key", "")
 
+    def _framedsc_filter_kwargs(self) -> dict:
+        inc = [g for g in self.config.get("framedsc_include_games", "").split(",") if g.strip()]
+        exc = [g for g in self.config.get("framedsc_exclude_games", "").split(",") if g.strip()]
+        return dict(
+            min_score=self.config.get("framedsc_min_score", 0),
+            include_games=inc,
+            exclude_games=exc,
+            color_group=self.config.get("framedsc_color_group") or None,
+        )
+
     def _build_provider(self):
         provider_name = self.config.get("provider", "unsplash")
         if provider_name == "framedsc":
-            return FramedSCProvider()
-        # за замовчуванням — Unsplash
+            if self._framedsc_provider is None:
+                self._framedsc_provider = FramedSCProvider(**self._framedsc_filter_kwargs())
+            return self._framedsc_provider
+        # Unsplash
         key = self._get_unsplash_key()
         if not key:
             return None
         return UnsplashProvider(key, app_name=config_mod.APP_NAME)
+
+    def _apply_framedsc_filters(self) -> None:
+        """Оновити фільтри провайдера (без перезавантаження даних) і stats."""
+        if self._framedsc_provider is None:
+            return
+        self._framedsc_provider.update_filters(**self._framedsc_filter_kwargs())
+        self._update_framedsc_stats()
+
+    def _update_framedsc_stats(self) -> None:
+        if self._framedsc_provider and self._framedsc_provider.shot_count > 0:
+            self.framedsc_stats_item.title = f"📊 {self._framedsc_provider.shot_count} shots match"
+        elif self._framedsc_provider:
+            self.framedsc_stats_item.title = "⚠️ 0 shots — relax filters"
+        else:
+            self.framedsc_stats_item.title = "–"
 
     # ---------- основна дія ----------
     def on_tick(self, _timer):
@@ -278,6 +423,9 @@ class WallRotateApp(rumps.App):
                 provider.on_applied(photo)  # тригер download-endpoint (Unsplash)
                 enforce_limit(config_mod.CACHE_DIR, self.config.get("cache_limit", 20))
                 self.current_photo = photo
+                # Оновлюємо stats після першого завантаження даних
+                if photo.source == "framedsc":
+                    self._update_framedsc_stats()
                 # Показуємо назву гри для FramedSC, автора для Unsplash
                 if photo.source == "framedsc" and photo.description:
                     self.photo_item.title = f"🎮 {photo.description} · {photo.author_name}"

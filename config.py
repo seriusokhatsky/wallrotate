@@ -23,6 +23,11 @@ DEFAULTS = {
     "cache_limit": 20,               # скільки фото тримати в кеші
     "paused": False,
     "unsplash_access_key": "",       # можна задати з меню додатку
+    # --- Hall of FRAMED фільтри ---
+    "framedsc_min_score": 0,         # мінімальний score (0 = будь-який)
+    "framedsc_include_games": "",    # часткові назви через кому (порожньо = всі)
+    "framedsc_exclude_games": "",    # часткові назви через кому (порожньо = нічого)
+    "framedsc_color_group": "",      # назва групи кольору або порожньо = Any
 }
 
 
