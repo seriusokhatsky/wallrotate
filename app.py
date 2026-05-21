@@ -174,9 +174,13 @@ class WallRotateApp(rumps.App):
         def cb(_sender):
             self.config["interval_seconds"] = secs
             config_mod.save_config(self.config)
+            # Зупиняємо ПЕРЕД зміною інтервалу: сеттер rumps.Timer.interval
+            # ігнорує нове значення, якщо таймер активний і поточний цикл
+            # ще не завершився. Після stop() _status=False — сеттер просто
+            # записує _interval, а start() підхопить нове значення.
+            self.timer.stop()
             self.timer.interval = secs
             if not self.config.get("paused"):
-                self.timer.stop()
                 self.timer.start()
             self._refresh_menu_state()
             rumps.notification("WallRotate", "Interval updated",

@@ -75,8 +75,11 @@ class FramedSCProvider(ImageProvider):
         shots = list(shots_raw.values())
         if self.skip_spoilers:
             shots = [s for s in shots if not s.get("spoiler", False)]
-        # Залишаємо тільки записи з URL зображення
-        self._shots = [s for s in shots if s.get("shotUrl")]
+        # Залишаємо тільки горизонтальні (width > height) з URL зображення
+        self._shots = [
+            s for s in shots
+            if s.get("shotUrl") and s.get("width", 0) > s.get("height", 0)
+        ]
         self._cached_at = time.monotonic()
 
     def _ensure_data(self) -> None:
