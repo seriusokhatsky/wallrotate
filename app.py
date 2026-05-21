@@ -12,6 +12,7 @@ from __future__ import annotations
 import os
 import sys
 import threading
+import time
 import webbrowser
 
 import rumps
@@ -81,8 +82,47 @@ class WallRotateApp(rumps.App):
         if not self.config.get("paused"):
             self.timer.start()
 
+        # Підписуємось на зміну Space: коли застосунок виходить із fullscreen,
+        # монітор повертається до desktop-Space зі своїм незалежним шпалером.
+        # Observer повторно ставить поточний шпалер при кожній такій зміні.
+        self._current_wallpaper_path: str | None = None
+        self._register_space_observer()
+
         # Перша зміна одразу після старту (у фоновому потоці, щоб не блокувати UI)
         threading.Thread(target=self._change_wallpaper, daemon=True).start()
+
+    # ---------- space-change observer ----------
+    def _register_space_observer(self):
+        """Підписується на NSWorkspaceActiveSpaceDidChangeNotification.
+
+        На macOS кожен fullscreen-застосунок займає власний Space. NSWorkspace
+        встановлює шпалер лише для активного Space екрана, тому desktop-Space
+        може залишитись із старим шпалером. Коли користувач виходить із
+        fullscreen, цей observer повторно ставить поточний шпалер — вже для
+        desktop-Space, що щойно став видимим.
+        """
+        try:
+            from AppKit import NSWorkspace
+
+            app_ref = self
+
+            def _on_space_change(_notification):
+                path = app_ref._current_wallpaper_path
+                if not path:
+                    return
+                def _apply():
+                    time.sleep(0.3)  # чекаємо завершення анімації переходу
+                    set_wallpaper(path)
+                threading.Thread(target=_apply, daemon=True).start()
+
+            NSWorkspace.sharedWorkspace().notificationCenter() \
+                .addObserverForName_object_queue_usingBlock_(
+                    "NSWorkspaceActiveSpaceDidChangeNotification",
+                    None, None,
+                    _on_space_change,
+                )
+        except Exception:  # noqa: BLE001
+            pass  # PyObjC недоступний — observer не потрібен
 
     # ---------- побудова меню ----------
     def _build_menu(self):
@@ -184,6 +224,7 @@ class WallRotateApp(rumps.App):
             path = download_photo(photo, config_mod.CACHE_DIR)
             ok = set_wallpaper(str(path))
             if ok:
+                self._current_wallpaper_path = str(path)  # для space-observer
                 provider.on_applied(photo)  # тригер download-endpoint
                 enforce_limit(config_mod.CACHE_DIR, self.config.get("cache_limit", 20))
                 self.current_photo = photo

@@ -1,11 +1,17 @@
 """Встановлення шпалери робочого столу на macOS.
 
-Основний шлях — нативний AppKit (NSWorkspace) через PyObjC: працює всередині
-нашого процесу і не потребує дозволу на Automation (на відміну від AppleScript
-через Finder). Якщо PyObjC недоступний — фолбек на osascript.
+Два методи, які виконуються при кожній ротації:
 
-Зауваження про Spaces: macOS зберігає шпалеру окремо для кожного робочого
-простору (Space). Цей виклик змінює фон активного Space кожного екрана.
+1. AppKit (NSWorkspace.setDesktopImageURL_forScreen_options_error_) —
+   основний метод. Встановлює шпалер для активного Space кожного підключеного
+   екрана. Без додаткових дозволів, миттєво.
+
+2. osascript (System Events) — резервний метод. Обходить всі десктопи через
+   Apple Events; корисний, якщо AppKit недоступний (немає PyObjC).
+
+Проблема fullscreen-просторів вирішується в app.py через підписку на
+NSWorkspaceActiveSpaceDidChangeNotification: коли застосунок виходить із
+fullscreen і монітор повертається до desktop-Space, шпалер ставиться повторно.
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from pathlib import Path
 
 
 def _set_via_appkit(path: str) -> bool:
+    """Встановлює шпалер через NSWorkspace для всіх активних екранів."""
     try:
         from AppKit import NSWorkspace, NSScreen
         from Foundation import NSURL
@@ -24,7 +31,7 @@ def _set_via_appkit(path: str) -> bool:
     workspace = NSWorkspace.sharedWorkspace()
     ok_any = False
     for screen in NSScreen.screens():
-        ok, _err = workspace.setDesktopImageURL_forScreen_options_error_(
+        ok, _ = workspace.setDesktopImageURL_forScreen_options_error_(
             url, screen, {}, None
         )
         ok_any = ok_any or bool(ok)
@@ -32,13 +39,20 @@ def _set_via_appkit(path: str) -> bool:
 
 
 def _set_via_osascript(path: str) -> bool:
+    """Резервний метод: встановлює шпалер через System Events."""
     script = (
-        'tell application "System Events" to set picture of every '
-        f'desktop to POSIX file "{path}"'
+        'tell application "System Events"\n'
+        '    set theDesktops to every desktop\n'
+        '    repeat with aDesktop in theDesktops\n'
+        f'        set picture of aDesktop to POSIX file "{path}"\n'
+        '    end repeat\n'
+        'end tell'
     )
     try:
-        subprocess.run(["osascript", "-e", script], check=True,
-                       capture_output=True, timeout=20)
+        subprocess.run(
+            ["osascript", "-e", script],
+            check=True, capture_output=True, timeout=20,
+        )
         return True
     except (subprocess.SubprocessError, OSError):
         return False
