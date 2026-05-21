@@ -1,0 +1,5 @@
+# Інструменти для збірки .app (не потрібні для запуску зі скрипта).
+# Встановлення:  pip install -r requirements-dev.txt
+setuptools>=68
+wheel
+py2app>=0.28
