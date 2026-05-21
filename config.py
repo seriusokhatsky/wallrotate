@@ -16,9 +16,9 @@ CACHE_DIR = SUPPORT_DIR / "cache"
 
 DEFAULTS = {
     "interval_seconds": 3600,        # раз на годину
-    "provider": "unsplash",
-    "query": "nature,landscape",     # тема пошуку (через кому = випадково з набору)
-    "orientation": "landscape",      # landscape | portrait | squarish
+    "provider": "unsplash",          # "unsplash" | "framedsc"
+    "query": "nature,landscape",     # тема пошуку для Unsplash (через кому = випадково)
+    "orientation": "landscape",      # landscape | portrait | squarish (тільки Unsplash)
     "same_on_all_monitors": True,
     "cache_limit": 20,               # скільки фото тримати в кеші
     "paused": False,

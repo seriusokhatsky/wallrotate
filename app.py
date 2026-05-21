@@ -1,4 +1,4 @@
-"""WallRotate — menu-bar додаток, що міняє шпалери з Unsplash за інтервалом.
+"""WallRotate — menu-bar додаток, що міняє шпалери з Unsplash або Hall of FRAMED.
 
 Запуск під час розробки:
     python3 app.py
@@ -6,6 +6,9 @@
 Ключ Unsplash береться з:
     1) змінної середовища UNSPLASH_ACCESS_KEY, або
     2) поля unsplash_access_key у config.json (можна задати з меню додатку).
+
+Джерело Hall of FRAMED не потребує ключа — дані завантажуються з публічного
+JSON-репозиторію на GitHub.
 """
 from __future__ import annotations
 
@@ -21,6 +24,7 @@ import config as config_mod
 import launch_agent
 from cache import download_photo, enforce_limit
 from providers.unsplash import UnsplashProvider
+from providers.framedsc import FramedSCProvider
 from wallpaper import set_wallpaper
 
 # Підписи інтервалів -> секунди
@@ -137,8 +141,17 @@ class WallRotateApp(rumps.App):
             self.interval_items.append((item, secs))
             interval_menu.add(item)
 
-        theme_item = rumps.MenuItem("Set theme…", callback=self.on_set_theme)
-        key_item = rumps.MenuItem("Set Unsplash API key…", callback=self.on_set_key)
+        # Вибір джерела зображень
+        source_menu = rumps.MenuItem("Source")
+        self.source_unsplash_item = rumps.MenuItem(
+            "Unsplash", callback=self._make_source_cb("unsplash"))
+        self.source_framedsc_item = rumps.MenuItem(
+            "Hall of FRAMED", callback=self._make_source_cb("framedsc"))
+        source_menu.add(self.source_unsplash_item)
+        source_menu.add(self.source_framedsc_item)
+
+        self.theme_item = rumps.MenuItem("Set theme…", callback=self.on_set_theme)
+        self.key_item = rumps.MenuItem("Set Unsplash API key…", callback=self.on_set_key)
         self.login_item = rumps.MenuItem("Launch at login", callback=self.on_toggle_login)
         about_item = rumps.MenuItem("About", callback=self.on_about)
 
@@ -149,8 +162,9 @@ class WallRotateApp(rumps.App):
             self.pause_item,
             interval_menu,
             None,
-            theme_item,
-            key_item,
+            source_menu,
+            self.theme_item,
+            self.key_item,
             self.login_item,
             None,
             about_item,
@@ -169,6 +183,16 @@ class WallRotateApp(rumps.App):
                                self._interval_label(secs))
         return cb
 
+    def _make_source_cb(self, provider_name: str):
+        def cb(_sender):
+            self.config["provider"] = provider_name
+            config_mod.save_config(self.config)
+            self._refresh_menu_state()
+            label = "Unsplash" if provider_name == "unsplash" else "Hall of FRAMED"
+            rumps.notification("WallRotate", "Source changed", label)
+            threading.Thread(target=self._change_wallpaper, daemon=True).start()
+        return cb
+
     # ---------- стан меню ----------
     @staticmethod
     def _interval_label(secs):
@@ -180,19 +204,40 @@ class WallRotateApp(rumps.App):
     def _refresh_menu_state(self):
         paused = self.config.get("paused", False)
         self.pause_item.title = "Resume" if paused else "Pause"
+
         # позначка ✓ навпроти активного інтервалу
         active = self.config["interval_seconds"]
         for item, secs in self.interval_items:
             item.state = 1 if secs == active else 0
+
+        # позначка ✓ навпроти активного джерела
+        provider = self.config.get("provider", "unsplash")
+        self.source_unsplash_item.state = 1 if provider == "unsplash" else 0
+        self.source_framedsc_item.state = 1 if provider == "framedsc" else 0
+
+        # Unsplash-специфічні пункти — показуємо тільки якщо обрано Unsplash
+        is_unsplash = (provider == "unsplash")
+        self.theme_item.set_callback(self.on_set_theme if is_unsplash else None)
+        self.key_item.set_callback(self.on_set_key if is_unsplash else None)
+        # Візуальна підказка про недоступність
+        self.theme_item.title = "Set theme…" if is_unsplash else "Set theme… (Unsplash only)"
+        self.key_item.title = (
+            "Set Unsplash API key…" if is_unsplash else "Set Unsplash API key… (inactive)"
+        )
+
         # позначка ✓ для автозапуску при вході
         self.login_item.state = 1 if launch_agent.is_enabled() else 0
 
     # ---------- ключ та провайдер ----------
-    def _get_api_key(self):
+    def _get_unsplash_key(self):
         return os.environ.get("UNSPLASH_ACCESS_KEY") or self.config.get("unsplash_access_key", "")
 
     def _build_provider(self):
-        key = self._get_api_key()
+        provider_name = self.config.get("provider", "unsplash")
+        if provider_name == "framedsc":
+            return FramedSCProvider()
+        # за замовчуванням — Unsplash
+        key = self._get_unsplash_key()
         if not key:
             return None
         return UnsplashProvider(key, app_name=config_mod.APP_NAME)
@@ -211,6 +256,7 @@ class WallRotateApp(rumps.App):
         try:
             provider = self._build_provider()
             if provider is None:
+                # Може бути None тільки для Unsplash без ключа
                 rumps.notification(
                     "WallRotate", "API key needed",
                     "Set your Unsplash API key from the menu.")
@@ -225,10 +271,14 @@ class WallRotateApp(rumps.App):
             ok = set_wallpaper(str(path))
             if ok:
                 self._current_wallpaper_path = str(path)  # для space-observer
-                provider.on_applied(photo)  # тригер download-endpoint
+                provider.on_applied(photo)  # тригер download-endpoint (Unsplash)
                 enforce_limit(config_mod.CACHE_DIR, self.config.get("cache_limit", 20))
                 self.current_photo = photo
-                self.photo_item.title = f"📷 {photo.author_name}"
+                # Показуємо назву гри для FramedSC, автора для Unsplash
+                if photo.source == "framedsc" and photo.description:
+                    self.photo_item.title = f"🎮 {photo.description} · {photo.author_name}"
+                else:
+                    self.photo_item.title = f"📷 {photo.author_name}"
             else:
                 self.photo_item.title = "⚠️ Could not set wallpaper"
         except Exception as exc:  # noqa: BLE001 — для MVP показуємо помилку в меню
@@ -259,10 +309,12 @@ class WallRotateApp(rumps.App):
 
     def on_open_author(self, _sender):
         if self.current_photo:
-            provider = self._build_provider()
             link = self.current_photo.author_link
-            if provider:
-                link = provider.attribution_url(link)
+            # Для Unsplash додаємо UTM-параметри
+            if self.current_photo.source == "unsplash":
+                provider = self._build_provider()
+                if provider:
+                    link = provider.attribution_url(link)
             webbrowser.open(link)
 
     def on_set_theme(self, _sender):
@@ -295,8 +347,14 @@ class WallRotateApp(rumps.App):
     def on_about(self, _sender):
         rumps.alert(
             title="WallRotate",
-            message=("Auto-rotating desktop wallpapers from Unsplash.\n"
-                     "Photos via the Unsplash API. MVP build."),
+            message=(
+                "Auto-rotating desktop wallpapers.\n\n"
+                "Sources:\n"
+                "• Unsplash — photos via the Unsplash API\n"
+                "• Hall of FRAMED — curated game screenshots\n"
+                "  (framedsc.com)\n\n"
+                "MVP build."
+            ),
         )
 
 
