@@ -19,7 +19,7 @@ OPTIONS = {
         "LSUIElement": True,                 # фоновий застосунок, без Dock
         "CFBundleName": "WallRotate",
         "CFBundleDisplayName": "WallRotate",
-        "CFBundleIdentifier": "com.example.wallrotate",
+        "CFBundleIdentifier": "dev.wallrotate.app",
         "CFBundleVersion": "0.1.0",
         "CFBundleShortVersionString": "0.1.0",
     },

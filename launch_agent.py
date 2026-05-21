@@ -15,7 +15,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-LABEL = "com.example.wallrotate"
+LABEL = "dev.wallrotate.app"
 LAUNCH_AGENTS_DIR = Path.home() / "Library" / "LaunchAgents"
 PLIST_PATH = LAUNCH_AGENTS_DIR / f"{LABEL}.plist"
 

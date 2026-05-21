@@ -6,6 +6,8 @@
 from __future__ import annotations
 
 import json
+import os
+import tempfile
 from pathlib import Path
 
 APP_NAME = "WallRotate"
@@ -49,5 +51,26 @@ def load_config() -> dict:
 
 
 def save_config(cfg: dict) -> None:
+    """Атомарний запис: спочатку у тимчасовий файл, потім os.replace.
+
+    Запобігає втраті налаштувань, якщо процес впаде посередині запису —
+    у такому разі лишиться або старий config.json, або новий, але не обрізаний.
+    """
     ensure_dirs()
-    CONFIG_PATH.write_text(json.dumps(cfg, indent=2, ensure_ascii=False), encoding="utf-8")
+    payload = json.dumps(cfg, indent=2, ensure_ascii=False)
+    fd, tmp_path = tempfile.mkstemp(
+        prefix=".config-", suffix=".tmp", dir=str(SUPPORT_DIR)
+    )
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(payload)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, CONFIG_PATH)
+    except Exception:
+        # Прибрати tmp при будь-якій помилці, щоб не лишати сміття
+        try:
+            os.unlink(tmp_path)
+        except OSError:
+            pass
+        raise
